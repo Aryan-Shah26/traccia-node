@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Groq (`groq-sdk`) chat completions are traced. `init()` patches `client.chat.completions.create` for regular and streaming calls; `wrapGroqChatCompletionsCreate()` wraps a client by hand (for apps that load `groq-sdk` as an ES module). `create()` keeps `.withResponse()` and `.asResponse()`
-- A streamed Groq call's span stays open until the stream is read, stopped early, aborted, or garbage collected, then records the full completion and token usage. Aborts are marked `aborted` and release the governance reservation. Settlement runs as the agent that made the call
+- A streamed Groq call's span stays open until the stream is read to the end (recording the full completion and token usage), stopped early (recording the text so far), aborted, or garbage collected. An abort is marked `aborted`, ends the span, and releases the governance reservation right away. An abort or error mid-stream keeps the text received so far. Settlement runs as the agent that made the call
 
 ## [0.1.18] - 2026-10-08
 
