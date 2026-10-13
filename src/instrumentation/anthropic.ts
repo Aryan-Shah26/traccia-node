@@ -113,7 +113,7 @@ export function wrapAnthropicCreate<T>(
 
             let decision: Record<string, unknown> | undefined;
             try {
-                decision = await enforceLlmCall(kwargs);
+                decision = await enforceLlmCall(kwargs, attributes['llm.vendor'] as string);
                 const response = await createFn.apply(instance || this, args);
 
                 // Extract usage from response

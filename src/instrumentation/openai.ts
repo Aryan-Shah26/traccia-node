@@ -159,7 +159,7 @@ export function wrapOpenAICreate<T>(
 
             let decision: Record<string, unknown> | undefined;
             try {
-                decision = await enforceLlmCall(kwargs);
+                decision = await enforceLlmCall(kwargs, attributes['llm.vendor'] as string);
                 const response = await createFn.apply(instance || this, args);
                 const usage = safeGet(response, 'usage') as Record<string, number> | undefined;
                 if (usage) {
@@ -290,7 +290,7 @@ export function wrapOpenAIResponsesCreate<T>(
 
             let decision: Record<string, unknown> | undefined;
             try {
-                decision = await enforceLlmCall(kwargs);
+                decision = await enforceLlmCall(kwargs, attributes['llm.vendor'] as string);
                 const response = await createFn.apply(instance || this, args);
 
                 // Extract output from response

@@ -15,6 +15,7 @@ interface Case {
   vendor: string | null;
   key: string | null;
   kind: 'exact' | 'base' | null;
+  ambiguous?: boolean;
 }
 
 const fixture = JSON.parse(
@@ -29,6 +30,9 @@ describe('matchModel shared cases', () => {
     } else {
       expect(result).toBeDefined();
       expect([result!.key, result!.kind]).toEqual([c.key, c.kind]);
+      if (c.ambiguous !== undefined) {
+        expect(result!.ambiguous).toBe(c.ambiguous);
+      }
     }
   });
 });
@@ -84,6 +88,15 @@ describe('CostAnnotatingProcessor pricing match', () => {
     expect(span.attributes['llm.pricing.model_key']).toBe('groq/openai/gpt-oss-120b');
     expect(span.attributes['llm.pricing.match_kind']).toBe('base');
     expect(span.attributes['llm.pricing.provider']).toBe('groq');
+  });
+
+  it.each([
+    ['o1-mini-2024-09-12', 'azure', 0.0055],
+    ['models/gemini-2.0-flash-001', 'google_gemini', 0.0005],
+    ['gemini-2.0-flash-001', 'google_gemini', 0.0005],
+  ])('prices %s for vendor %s from its own key', (model, vendor, usd) => {
+    const resolver = new CostResolver(fixture.table as any);
+    expect(resolver.compute(model, 1000, 1000, 0, 0, vendor)).toBeCloseTo(usd, 9);
   });
 
   it('does not price a model by a key its name only starts with', () => {
