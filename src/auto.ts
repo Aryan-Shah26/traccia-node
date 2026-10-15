@@ -38,9 +38,10 @@ import {
 import { CostResolver, setResolver } from './processor/cost-resolver';
 import { SDKConfig, ISpanExporter, ITracer } from './types';
 import { configureGovernance } from './governance/config';
+import { flushPendingSettles } from './governance/pep';
 import { configurePrompts } from './prompts';
 import { patchGemini } from './instrumentation/gemini';
-import { patchGroq } from './instrumentation/groq';
+import { patchGroq, patchGroqEsm } from './instrumentation/groq';
 import { patchAxios } from './instrumentation/axios';
 
 let globalProvider: TracerProvider | null = null;
@@ -301,6 +302,9 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
     }
     try {
       patchGroq();
+      // An app that imports groq-sdk as an ES module uses a separate build, which loads
+      // asynchronously. Wait for it so calls made after init() are traced.
+      await patchGroqEsm();
     } catch {
       /* optional peer */
     }
@@ -322,6 +326,8 @@ export async function stopTracing(): Promise<void> {
     return;
   }
 
+  // Governance settles run in the background; let them reach the server first.
+  await flushPendingSettles().catch(() => undefined);
   await globalProvider.shutdown();
   started = false;
   globalProvider = null;
@@ -337,6 +343,7 @@ function registerShutdown(provider: TracerProvider, _processor: BatchSpanProcess
 
   const shutdown = async (): Promise<void> => {
     try {
+      await flushPendingSettles();
       await provider.shutdown();
     } catch {
       // Silently fail
