@@ -5,7 +5,8 @@
  * (groq/openai/gpt-oss-120b -> gpt-oss-120b), a Bedrock region (us.), or a date or
  * -latest suffix. Among keys with the same base name, the span's vendor's own key wins
  * (its key for the exact dated version first), then the key for the exact name, then the
- * shortest key. A name with no matching base name gets no price.
+ * shortest key. A name with no matching base name gets no price, and neither does a call from
+ * a strict vendor (Groq) whose own keys do not have it.
  *
  * Port of traccia-py pricing_matcher.py (also copied in traccia-dashboard-service as
  * app/services/pricing/matcher.py). All three run the shared cases in
@@ -25,6 +26,12 @@ const VENDOR_PROVIDERS: Record<string, string[]> = {
   google: ['vertex_ai'], // LangChain Vertex AI models
   aws: ['bedrock'], // LangChain Bedrock models
 };
+
+// llm.vendor values set only by a provider's own SDK, which calls no other provider (the openai
+// SDK also calls OpenAI-compatible providers, so "openai" is not one). Their calls are priced
+// only from that provider's keys, never from another provider's key for the same model name.
+// The SDKs' cost engines apply the same rule (STRICT_VENDORS).
+const STRICT_VENDORS: ReadonlySet<string> = new Set(['groq']);
 
 export interface PriceMatch {
   key: string;
@@ -130,6 +137,9 @@ export function matchModel(
   let best = keys[0];
   for (const key of keys.slice(1)) {
     if (before(rank(key), rank(best))) best = key;
+  }
+  if (!own(best) && STRICT_VENDORS.has(String(vendor || '').trim().toLowerCase())) {
+    return undefined;
   }
   const provider = providerOf(best, table[best]);
   if (best === name) {
