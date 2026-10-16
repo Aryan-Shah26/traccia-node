@@ -41,6 +41,8 @@ import { configureGovernance } from './governance/config';
 import { configurePrompts } from './prompts';
 import { patchGemini } from './instrumentation/gemini';
 import { patchAxios } from './instrumentation/axios';
+import { patchOpenAI, patchOpenAIResponses } from './instrumentation/openai';
+import { patchAnthropic } from './instrumentation/anthropic';
 
 let globalProvider: TracerProvider | null = null;
 let started = false;
@@ -247,10 +249,6 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
     setResolver(new CostResolver(pricing, pricingSource, pricingGeneratedAt));
   }
 
-  if (config.enableSpanLogging || loadedConfig.logging.enable_span_logging) {
-    provider.addSpanProcessor(new LoggingSpanProcessor());
-  }
-
   provider.addSpanProcessor(
     new AgentEnrichmentProcessor({
       agentConfigPath: agentConfigPath,
@@ -280,6 +278,11 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
     provider.addSpanProcessor(new RedactionSpanProcessor());
   }
 
+  // Log after enrichment and redaction so span logs never contain unredacted values.
+  if (config.enableSpanLogging || loadedConfig.logging.enable_span_logging) {
+    provider.addSpanProcessor(new LoggingSpanProcessor());
+  }
+
   // Add batch processor with exporter
   const processor = new BatchSpanProcessor({
     exporter,
@@ -302,6 +305,13 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
       patchAxios();
     } catch {
       /* optional peer */
+    }
+    for (const patch of [patchOpenAI, patchOpenAIResponses, patchAnthropic]) {
+      try {
+        patch();
+      } catch {
+        /* optional peer */
+      }
     }
   }
 
