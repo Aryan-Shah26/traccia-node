@@ -13,6 +13,8 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   treeshake: true,
+  // ESM needs __dirname shimmed to locate data/pricing_snapshot.json.
+  shims: true,
   minify: false,
   // Optional provider SDKs are devDependencies (for tests) but must never be
   // bundled: auto-instrumentation patches the copy the host application loads.
