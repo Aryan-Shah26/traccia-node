@@ -8,7 +8,10 @@ export class CostResolver {
   private table: PricingTable;
   private source: string;
   private generatedAt: string;
-  private lookupCache = new Map<string, string | undefined>();
+  // Per-table indexes, built on first lookup and dropped by update(). Bounded by the
+  // table size, unlike a per-model cache keyed by caller-supplied names.
+  private lowerIndex?: Map<string, string>;
+  private tailIndex?: Map<string, string>;
 
   constructor(
     pricingTable: PricingTable,
@@ -41,7 +44,8 @@ export class CostResolver {
     generatedAt?: string
   ): void {
     this.table = pricingTable;
-    this.lookupCache.clear();
+    this.lowerIndex = undefined;
+    this.tailIndex = undefined;
     if (source) {
       this.source = source;
     }
@@ -112,11 +116,6 @@ export class CostResolver {
     if (!normalized) {
       return undefined;
     }
-    if (this.lookupCache.has(normalized)) {
-      const key = this.lookupCache.get(normalized);
-      return key === undefined ? undefined : [key, this.table[key]];
-    }
-
     // Every exact or alias candidate is tried before any provider-prefixed key, so
     // claude-3-opus prices as Anthropic's claude-3-opus-20240229, not vertex_ai/claude-3-opus.
     const candidates = modelCandidates(normalized);
@@ -131,7 +130,6 @@ export class CostResolver {
         if (key !== undefined) break;
       }
     }
-    this.lookupCache.set(normalized, key);
     return key === undefined ? undefined : [key, this.table[key]];
   }
 
@@ -139,20 +137,31 @@ export class CostResolver {
     if (hasOwn(this.table, name)) {
       return name;
     }
-    const lower = name.toLowerCase();
-    return Object.keys(this.table).find((key) => key.toLowerCase() === lower);
+    this.buildIndexes();
+    return this.lowerIndex!.get(name.toLowerCase());
   }
 
   /** Provider-prefixed keys: grok-4.7 -> xai/grok-4.7. Shortest key wins. */
   private matchProviderPrefixed(name: string): string | undefined {
-    const lower = name.toLowerCase();
-    let hit: string | undefined;
-    for (const key of Object.keys(this.table)) {
-      if (modelTail(key).toLowerCase() === lower && (hit === undefined || key.length < hit.length)) {
-        hit = key;
-      }
+    this.buildIndexes();
+    return this.tailIndex!.get(name.toLowerCase());
+  }
+
+  private buildIndexes(): void {
+    if (this.lowerIndex && this.tailIndex) {
+      return;
     }
-    return hit;
+    const lower = new Map<string, string>();
+    const tail = new Map<string, string>();
+    for (const key of Object.keys(this.table)) {
+      const k = key.toLowerCase();
+      if (!lower.has(k)) lower.set(k, key);
+      const t = modelTail(key).toLowerCase();
+      const prev = tail.get(t);
+      if (prev === undefined || key.length < prev.length) tail.set(t, key);
+    }
+    this.lowerIndex = lower;
+    this.tailIndex = tail;
   }
 
   public snapshot(): { table: PricingTable; source: string; generatedAt: string } {
