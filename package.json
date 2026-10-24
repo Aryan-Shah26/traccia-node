@@ -51,6 +51,7 @@
   },
   "files": [
     "dist",
+    "data/pricing_snapshot.json",
     "src",
     "LICENSE",
     "README.md"
@@ -86,6 +87,7 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "pretest": "npm run build",
     "test": "jest",
+    "pricing:snapshot": "node scripts/build-pricing-snapshot.mjs",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "prepublishOnly": "npm run build && npm run test",

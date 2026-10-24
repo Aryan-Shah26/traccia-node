@@ -4,6 +4,8 @@ const shared = {
   splitting: false as const,
   sourcemap: true,
   treeshake: true,
+  // ESM needs __dirname shimmed to locate data/pricing_snapshot.json.
+  shims: true,
   minify: false,
 };
 

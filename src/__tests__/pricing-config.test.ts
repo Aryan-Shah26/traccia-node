@@ -14,6 +14,8 @@ import {
     getLocalCacheInfo,
     clearLocalCache,
     fetchRemotePricing,
+    readBundledSnapshot,
+    bundledSnapshotCandidates,
     loadPricingWithSource,
     loadPricing,
     snapshotAgeDays,
@@ -87,6 +89,45 @@ describe('pricing-config', () => {
         });
     });
 
+    describe('bundled snapshot validation (TRC-284)', () => {
+        it.each([
+            ['an array of models', { models: [] }],
+            ['an empty models object', { models: {} }],
+            ['models: null', { models: null }],
+            ['a JSON array', []],
+            ['a JSON string', 'pricing'],
+        ])('rejects %s', (_label, body) => {
+            mockExistsSync.mockReturnValue(true);
+            mockReadFileSync.mockReturnValue(JSON.stringify(body));
+
+            expect(readBundledSnapshot()).toBeNull();
+            expect(loadBundledPricing()).toEqual({});
+        });
+
+        it('reads the snapshot under the new file name, not the legacy pricing.json', () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReadFileSync.mockReturnValue(JSON.stringify({ models: { m: { inputCost: 1, outputCost: 1 } } }));
+
+            readBundledSnapshot();
+
+            const read = mockReadFileSync.mock.calls.map((c) => String(c[0]));
+            expect(read.length).toBeGreaterThan(0);
+            expect(read.every((p) => p.endsWith('pricing_snapshot.json'))).toBe(true);
+        });
+
+        it('falls through to the next candidate when the first one is corrupt', () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReadFileSync
+                .mockImplementationOnce(() => '{not json')
+                .mockImplementationOnce(() => JSON.stringify({ models: { m: { inputCost: 1, outputCost: 1 } }, generated_at: '2026-01-01' }));
+
+            const snap = readBundledSnapshot();
+
+            expect(snap?.models).toEqual({ m: { inputCost: 1, outputCost: 1 } });
+            expect(snap?.path).toBe(bundledSnapshotCandidates()[1]);
+        });
+    });
+
     describe('getBundledGeneratedAt', () => {
         it('returns null when the bundled file does not exist', () => {
             mockExistsSync.mockReturnValue(false);
@@ -96,9 +137,20 @@ describe('pricing-config', () => {
 
         it('returns generated_at when present', () => {
             mockExistsSync.mockReturnValue(true);
-            mockReadFileSync.mockReturnValue(JSON.stringify({ generated_at: '2026-02-02' }));
+            mockReadFileSync.mockReturnValue(
+                JSON.stringify({ generated_at: '2026-02-02', models: { 'gpt-5': { inputCost: 1, outputCost: 2 } } }),
+            );
 
             expect(getBundledGeneratedAt()).toBe('2026-02-02');
+        });
+
+        it('returns null for an unparseable generated_at (TRC-284)', () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReadFileSync.mockReturnValue(
+                JSON.stringify({ generated_at: 'yesterday', models: { 'gpt-5': { inputCost: 1, outputCost: 2 } } }),
+            );
+
+            expect(getBundledGeneratedAt()).toBeNull();
         });
 
         it('returns null when generated_at is missing', () => {
@@ -332,13 +384,37 @@ describe('pricing-config', () => {
     });
 
     describe('loadPricingWithSource / loadPricing', () => {
-        it('uses bundled pricing and source "bundled" when no local cache or override exist', async () => {
+        it('without a snapshot, cache or override: empty table, source "default", generatedAt "unknown" (TRC-284)', async () => {
             mockExistsSync.mockReturnValue(false);
 
-            const [pricing, source] = await loadPricingWithSource();
+            const [pricing, source, generatedAt] = await loadPricingWithSource();
 
-            expect(pricing).toEqual(DEFAULT_PRICING);
+            expect(pricing).toEqual({});
+            expect(source).toBe('default');
+            expect(generatedAt).toBe('unknown');
+        });
+
+        it('reports the bundled snapshot timestamp, not the load time (TRC-284)', async () => {
+            mockExistsSync.mockImplementation((p: string) => String(p).endsWith('pricing_snapshot.json'));
+            mockReadFileSync.mockReturnValue(
+                JSON.stringify({ generated_at: '2026-04-22T15:07:43Z', models: { 'gpt-4o-mini': { prompt: 0.00015, completion: 0.0006 } } }),
+            );
+
+            const [pricing, source, generatedAt] = await loadPricingWithSource();
+
+            expect(Object.keys(pricing)).toEqual(['gpt-4o-mini']);
             expect(source).toBe('bundled');
+            expect(generatedAt).toBe('2026-04-22T15:07:43Z');
+        });
+
+        it('a bundled snapshot without generated_at reports "unknown" (TRC-284)', async () => {
+            mockExistsSync.mockImplementation((p: string) => String(p).endsWith('pricing_snapshot.json'));
+            mockReadFileSync.mockReturnValue(JSON.stringify({ models: { m: { inputCost: 1, outputCost: 1 } } }));
+
+            const [, source, generatedAt] = await loadPricingWithSource();
+
+            expect(source).toBe('bundled');
+            expect(generatedAt).toBe('unknown');
         });
 
         it('merges local cache on top of bundled and reports source "local_cache"', async () => {

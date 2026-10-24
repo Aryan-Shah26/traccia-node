@@ -34,62 +34,73 @@ export function getCachePath(): string {
 }
 
 /**
- * Default pricing table.
+ * Fallback used only when no snapshot can be loaded. It is intentionally empty:
+ * a missing snapshot must leave models unpriced, never price them at legacy
+ * hardcoded rates.
+ * @deprecated Kept for backward compatibility; use loadBundledPricing().
  */
-export const DEFAULT_PRICING: PricingTable = {
-  'gpt-3.5-turbo': {
-    inputCost: 0.0005,
-    outputCost: 0.0015,
-  },
-  'gpt-4': {
-    inputCost: 0.03,
-    outputCost: 0.06,
-  },
-  'gpt-4-turbo': {
-    inputCost: 0.01,
-    outputCost: 0.03,
-  },
-  'claude-2': {
-    inputCost: 0.008,
-    outputCost: 0.024,
-  },
-  'claude-3-opus': {
-    inputCost: 0.015,
-    outputCost: 0.075,
-  },
-};
+export const DEFAULT_PRICING: PricingTable = Object.freeze({}) as PricingTable;
+
+export const BUNDLED_SNAPSHOT_FILE = 'pricing_snapshot.json';
 
 /**
- * Load bundled pricing snapshot.
+ * Candidate locations of the shipped snapshot (<package>/data/pricing_snapshot.json).
+ * The bundled build runs from dist/, the sources (ts-jest, ts-node) from src/config/.
+ */
+export function bundledSnapshotCandidates(baseDir: string = __dirname): string[] {
+  return [
+    path.join(baseDir, '..', 'data', BUNDLED_SNAPSHOT_FILE),
+    path.join(baseDir, '..', '..', 'data', BUNDLED_SNAPSHOT_FILE),
+  ];
+}
+
+export interface BundledSnapshot {
+  models: PricingTable;
+  generatedAt: string | null;
+  path: string;
+}
+
+/**
+ * Read the snapshot shipped with the SDK, or null when it is missing or invalid.
+ */
+export function readBundledSnapshot(): BundledSnapshot | null {
+  for (const candidate of bundledSnapshotCandidates()) {
+    try {
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+      const data = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+      const models = data?.models;
+      if (!models || typeof models !== 'object' || Array.isArray(models) || !Object.keys(models).length) {
+        continue;
+      }
+      return { models, generatedAt: validTimestamp(data.generated_at), path: candidate };
+    } catch {
+      // Try the next candidate
+    }
+  }
+  return null;
+}
+
+/**
+ * Load bundled pricing snapshot. Returns an empty table when the snapshot is missing.
  */
 export function loadBundledPricing(): PricingTable {
-  // Try to load from bundled snapshot
-  try {
-    const bundledPath = path.join(__dirname, '..', 'data', 'pricing.json');
-    if (fs.existsSync(bundledPath)) {
-      const data = JSON.parse(fs.readFileSync(bundledPath, 'utf-8'));
-      return data.models || DEFAULT_PRICING;
-    }
-  } catch {
-    // Fall through to default
-  }
-  return DEFAULT_PRICING;
+  return readBundledSnapshot()?.models ?? DEFAULT_PRICING;
 }
 
 /**
  * Get bundled pricing generated timestamp.
  */
 export function getBundledGeneratedAt(): string | null {
-  try {
-    const bundledPath = path.join(__dirname, '..', 'data', 'pricing.json');
-    if (fs.existsSync(bundledPath)) {
-      const data = JSON.parse(fs.readFileSync(bundledPath, 'utf-8'));
-      return data.generated_at || null;
-    }
-  } catch {
-    // Fall through
+  return readBundledSnapshot()?.generatedAt ?? null;
+}
+
+function validTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
   }
-  return null;
+  return Number.isNaN(new Date(value).getTime()) ? null : value;
 }
 
 /**
@@ -215,24 +226,29 @@ export function clearLocalCache(): boolean {
  */
 export function fetchRemotePricing(): Promise<PricingTable> {
   // In production, this would fetch from a backend service
-  return Promise.resolve(DEFAULT_PRICING);
+  return Promise.resolve(loadBundledPricing());
 }
 
 /**
  * Load pricing configuration with source tracking.
+ *
+ * The timestamp is always the snapshot's own generated_at ('unknown' when it has
+ * none), never the load time. Without a snapshot the source is 'default' and the
+ * table is empty, so models stay unpriced.
  */
 export async function loadPricingWithSource(
   override?: PricingTable
 ): Promise<[PricingTable, PricingSource, string]> {
-  let pricing = loadBundledPricing();
-  let source: PricingSource = 'bundled';
-  let generatedAt = getBundledGeneratedAt() || new Date().toISOString();
+  const bundled = readBundledSnapshot();
+  let pricing: PricingTable = bundled ? { ...bundled.models } : {};
+  let source: PricingSource = bundled ? 'bundled' : 'default';
+  let generatedAt = bundled?.generatedAt ?? 'unknown';
 
   const localCache = getLocalCacheInfo();
-  if (localCache && localCache.models) {
+  if (localCache && localCache.models && Object.keys(localCache.models).length) {
     pricing = { ...pricing, ...localCache.models };
     source = 'local_cache';
-    generatedAt = localCache.generated_at;
+    generatedAt = validTimestamp(localCache.generated_at) ?? 'unknown';
   }
 
   if (override) {
