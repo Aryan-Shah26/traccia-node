@@ -2,12 +2,16 @@
  * Process-level singleton that holds the active pricing table.
  */
 
-import { PricingRates, PricingTable, DEFAULT_PRICING } from '../config/pricing-config';
+import { PricingRates, PricingTable, readBundledSnapshot } from '../config/pricing-config';
 
 export class CostResolver {
   private table: PricingTable;
   private source: string;
   private generatedAt: string;
+  // Per-table indexes, built on first lookup and dropped by update(). Bounded by the
+  // table size, unlike a per-model cache keyed by caller-supplied names.
+  private lowerIndex?: Map<string, string>;
+  private tailIndex?: Map<string, string>;
 
   constructor(
     pricingTable: PricingTable,
@@ -40,6 +44,8 @@ export class CostResolver {
     generatedAt?: string
   ): void {
     this.table = pricingTable;
+    this.lowerIndex = undefined;
+    this.tailIndex = undefined;
     if (source) {
       this.source = source;
     }
@@ -100,41 +106,62 @@ export class CostResolver {
     return this.lookupPrice(model)?.[0];
   }
 
+  /**
+   * Resolve a model name to a pricing key. Only exact IDs (case-insensitive),
+   * provider-qualified IDs, explicit aliases and dated snapshot suffixes match.
+   * There is no open prefix match: "gpt-4o-mini" must never price as "gpt-4".
+   */
   private lookupPrice(model: string): [string, PricingRates] | undefined {
     const normalized = String(model || '').trim();
     if (!normalized) {
       return undefined;
     }
-
-    if (this.table[normalized]) {
-      return [normalized, this.table[normalized]];
+    // Every exact or alias candidate is tried before any provider-prefixed key, so
+    // claude-3-opus prices as Anthropic's claude-3-opus-20240229, not vertex_ai/claude-3-opus.
+    const candidates = modelCandidates(normalized);
+    let key: string | undefined;
+    for (const candidate of candidates) {
+      key = this.matchExact(candidate);
+      if (key !== undefined) break;
     }
-
-    const lower = normalized.toLowerCase();
-    for (const [key, value] of Object.entries(this.table)) {
-      if (key.toLowerCase() === lower) {
-        return [key, value];
+    if (key === undefined) {
+      for (const candidate of candidates) {
+        key = this.matchProviderPrefixed(candidate);
+        if (key !== undefined) break;
       }
     }
+    return key === undefined ? undefined : [key, this.table[key]];
+  }
 
-    const keys = Object.keys(this.table).sort((a, b) => b.length - a.length);
-    const suffixHits: Array<[string, PricingRates]> = [];
-    for (const [key, value] of Object.entries(this.table)) {
-      if (modelTail(key).toLowerCase() === lower) {
-        suffixHits.push([key, value]);
-      }
+  private matchExact(name: string): string | undefined {
+    if (hasOwn(this.table, name)) {
+      return name;
     }
-    if (suffixHits.length) {
-      suffixHits.sort((a, b) => a[0].length - b[0].length);
-      return suffixHits[0];
-    }
-    for (const key of keys) {
-      if (lower.startsWith(key.toLowerCase())) {
-        return [key, this.table[key]];
-      }
-    }
+    this.buildIndexes();
+    return this.lowerIndex!.get(name.toLowerCase());
+  }
 
-    return undefined;
+  /** Provider-prefixed keys: grok-4.7 -> xai/grok-4.7. Shortest key wins. */
+  private matchProviderPrefixed(name: string): string | undefined {
+    this.buildIndexes();
+    return this.tailIndex!.get(name.toLowerCase());
+  }
+
+  private buildIndexes(): void {
+    if (this.lowerIndex && this.tailIndex) {
+      return;
+    }
+    const lower = new Map<string, string>();
+    const tail = new Map<string, string>();
+    for (const key of Object.keys(this.table)) {
+      const k = key.toLowerCase();
+      if (!lower.has(k)) lower.set(k, key);
+      const t = modelTail(key).toLowerCase();
+      const prev = tail.get(t);
+      if (prev === undefined || key.length < prev.length) tail.set(t, key);
+    }
+    this.lowerIndex = lower;
+    this.tailIndex = tail;
   }
 
   public snapshot(): { table: PricingTable; source: string; generatedAt: string } {
@@ -152,7 +179,11 @@ const GLOBAL_RESOLVER_KEY = Symbol.for('__TRACCIA_COST_RESOLVER__');
 export function getResolver(): CostResolver {
   const globalAny = globalThis as any;
   if (!globalAny[GLOBAL_RESOLVER_KEY]) {
-    globalAny[GLOBAL_RESOLVER_KEY] = new CostResolver(DEFAULT_PRICING);
+    // Before init() runs: the shipped snapshot, or an empty table (unpriced) if it is missing.
+    const bundled = readBundledSnapshot();
+    globalAny[GLOBAL_RESOLVER_KEY] = bundled
+      ? new CostResolver(bundled.models, 'bundled', bundled.generatedAt ?? 'unknown')
+      : new CostResolver({}, 'default', 'unknown');
   }
   return globalAny[GLOBAL_RESOLVER_KEY];
 }
@@ -170,6 +201,59 @@ function rate(pricing: PricingRates, primary: keyof PricingRates, alias: keyof P
 function optionalRate(pricing: PricingRates, primary: keyof PricingRates, alias: keyof PricingRates): number | undefined {
   const value = pricing[primary] ?? pricing[alias];
   return typeof value === "number" ? value : undefined;
+}
+
+/**
+ * Explicit aliases for model names that providers accept but the pricing
+ * snapshot only lists under a dated ID. A target missing from the active table
+ * leaves the model unpriced.
+ */
+export const MODEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  'claude-3-opus': 'claude-3-opus-20240229',
+  'claude-3-opus-latest': 'claude-3-opus-20240229',
+  'claude-3-haiku': 'claude-3-haiku-20240307',
+  'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
+  'claude-3-5-haiku-latest': 'claude-3-5-haiku-20241022',
+  'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
+  'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
+  'claude-3-7-sonnet': 'claude-3-7-sonnet-20250219',
+  'claude-3-7-sonnet-latest': 'claude-3-7-sonnet-20250219',
+  'claude-sonnet-4': 'claude-sonnet-4-20250514',
+  'claude-sonnet-4-0': 'claude-sonnet-4-20250514',
+  'claude-opus-4': 'claude-opus-4-20250514',
+  'claude-opus-4-0': 'claude-opus-4-20250514',
+});
+
+// Dated snapshot suffixes: gpt-4o-2024-08-06, claude-3-opus-20240229, claude-3-opus@20240229.
+const DATED_SUFFIX = /^(.+?)[-@](?:\d{4}-\d{2}-\d{2}|\d{8})$/;
+
+/**
+ * Names to try, in order: the model itself, its alias, the name without a
+ * provider prefix (openai/gpt-4o-mini), then the same without a dated suffix.
+ */
+export function modelCandidates(model: string): string[] {
+  const out: string[] = [];
+  const add = (name: string | undefined): void => {
+    if (name && !out.includes(name)) out.push(name);
+  };
+  const withAlias = (name: string): void => {
+    add(name);
+    const lower = name.toLowerCase();
+    if (hasOwn(MODEL_ALIASES, lower)) add(MODEL_ALIASES[lower]);
+  };
+
+  const bare = model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : undefined;
+  withAlias(model);
+  if (bare) withAlias(bare);
+  for (const name of [model, bare]) {
+    const undated = name ? DATED_SUFFIX.exec(name)?.[1] : undefined;
+    if (undated) withAlias(undated);
+  }
+  return out;
+}
+
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
 function modelTail(key: string): string {

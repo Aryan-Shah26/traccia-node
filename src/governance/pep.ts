@@ -4,7 +4,7 @@
 
 import axios, { AxiosInstance } from 'axios';
 import { resolveClientCredentials } from '../config/client-config';
-import { getAgentId, pepEnabled } from '../config/runtime-config';
+import { getAgentId, pepEnabled, pepFailOpen } from '../config/runtime-config';
 import { getCurrentSpan } from '../context/context';
 import { AgentBlockedError, ApprovalPending } from './policy';
 
@@ -225,6 +225,23 @@ function blockedMessage(decision: Record<string, unknown>): string {
   return parts.join('. ');
 }
 
+/** No decision from Traccia. Allow, unless the govern() run is fail-closed. */
+function unresolved(reason: string, detail: string, warn = true): Record<string, unknown> {
+  if (!pepFailOpen()) {
+    console.error(
+      `[traccia.governance] policy check could not complete (${detail}); blocking call (failOpen: false)`,
+    );
+    throw new AgentBlockedError(
+      `Policy check could not complete (${detail}). Blocking because failOpen is false.`,
+      { reasons: [reason] },
+    );
+  }
+  if (warn) {
+    console.warn(`[traccia.governance] policy check could not complete (${detail}); allowing call`);
+  }
+  return { effect: 'allow', would_have: false, reasons: [reason] };
+}
+
 export async function checkPolicy(input: {
   action: Record<string, unknown>;
   context?: Record<string, unknown>;
@@ -232,11 +249,11 @@ export async function checkPolicy(input: {
 }): Promise<Record<string, unknown>> {
   const { apiKey, endpoint } = resolveClientCredentials();
   if (!apiKey || !endpoint) {
-    return { effect: 'allow', would_have: false, reasons: ['missing_credentials'] };
+    return unresolved('missing_credentials', 'Traccia API key or endpoint not set', false);
   }
   const agentId = getAgentId() || process.env.TRACCIA_AGENT_ID;
   if (!agentId) {
-    return { effect: 'allow', would_have: false, reasons: ['missing_agent_id'] };
+    return unresolved('missing_agent_id', 'no agentId on init, govern(), or TRACCIA_AGENT_ID', false);
   }
   const span = getCurrentSpan();
   const payload = {
@@ -286,15 +303,9 @@ export async function checkPolicy(input: {
       throw error;
     }
     if (axios.isAxiosError(error) && error.response) {
-      console.warn(
-        '[traccia.governance] policy check HTTP',
-        error.response.status,
-        '; allowing call',
-      );
-      return { effect: 'allow', would_have: false, reasons: ['check_http_error'] };
+      return unresolved('check_http_error', `HTTP ${error.response.status}`);
     }
-    console.warn('[traccia.governance] policy check failed; allowing call', error);
-    return { effect: 'allow', would_have: false, reasons: ['check_error'] };
+    return unresolved('check_error', error instanceof Error ? error.message : String(error));
   }
 }
 

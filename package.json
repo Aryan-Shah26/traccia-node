@@ -1,6 +1,6 @@
 {
   "name": "@traccia/sdk",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "Tracing SDK for agent applications",
   "main": "dist/index.js",
   "bin": {
@@ -51,6 +51,7 @@
   },
   "files": [
     "dist",
+    "data/pricing_snapshot.json",
     "src",
     "LICENSE",
     "README.md"
@@ -64,7 +65,7 @@
     "opentelemetry"
   ],
   "author": "Traccia",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/traccia-ai/traccia-node.git"
@@ -84,7 +85,9 @@
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
+    "pretest": "npm run build",
     "test": "jest",
+    "pricing:snapshot": "node scripts/build-pricing-snapshot.mjs",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "prepublishOnly": "npm run build && npm run test",
