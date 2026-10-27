@@ -11,7 +11,7 @@ import * as path from 'path';
 import { BUNDLED_SNAPSHOT_FILE, loadPricingWithSource, readBundledSnapshot } from '../config/pricing-config';
 import { CostResolver, MODEL_ALIASES, modelCandidates } from '../processor/cost-resolver';
 
-type Rates = { prompt?: number; completion?: number; cached_prompt?: number; cache_write?: number };
+type Rates = { prompt?: number; completion?: number; cached_prompt?: number; cache_write?: number; _provider?: string };
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const snapshotJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'data', BUNDLED_SNAPSHOT_FILE), 'utf-8'));
