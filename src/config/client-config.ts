@@ -10,30 +10,39 @@ export interface ClientConfig {
   readonly endpoint?: string;
 }
 
-let clientConfig: ClientConfig | undefined;
+const CLIENT_CONFIG_KEY = Symbol.for('traccia.clientConfig');
+
+type ClientConfigHost = typeof globalThis & { [CLIENT_CONFIG_KEY]?: ClientConfig };
+
+/** One process shares the config across the separately bundled entry points (auto, index, cli). */
+const host = globalThis as ClientConfigHost;
 
 export function setClientConfig(apiKey?: string, endpoint?: string): void {
-  clientConfig = Object.freeze({ apiKey: apiKey || undefined, endpoint: endpoint || undefined });
+  host[CLIENT_CONFIG_KEY] = Object.freeze({ apiKey: apiKey || undefined, endpoint: endpoint || undefined });
 }
 
 export function getClientConfig(): ClientConfig | undefined {
-  return clientConfig;
+  return host[CLIENT_CONFIG_KEY];
 }
 
 export function clearClientConfig(): void {
-  clientConfig = undefined;
+  delete host[CLIENT_CONFIG_KEY];
 }
 
 /**
- * Priority per field: explicit argument > init() config > env/config file (when init() did not set it).
+ * An explicit argument wins for its field. Otherwise the key and endpoint come
+ * as a pair from one source: the init() config when it has a key, else
+ * env/config file. The init() endpoint may be the default, so it is never
+ * paired with a key from another source.
  */
 export function resolveClientCredentials(opts?: { apiKey?: string; endpoint?: string }): ClientConfig {
-  let apiKey = opts?.apiKey || clientConfig?.apiKey;
-  let endpoint = opts?.endpoint || clientConfig?.endpoint;
-  if (!apiKey || !endpoint) {
-    const cfg = loadConfig();
-    apiKey = apiKey || cfg.tracing.api_key || process.env.TRACCIA_API_KEY;
-    endpoint = endpoint || cfg.tracing.endpoint || process.env.TRACCIA_ENDPOINT;
+  const clientConfig = getClientConfig();
+  if (clientConfig?.apiKey) {
+    return { apiKey: opts?.apiKey || clientConfig.apiKey, endpoint: opts?.endpoint || clientConfig.endpoint };
   }
-  return { apiKey, endpoint };
+  const cfg = loadConfig();
+  return {
+    apiKey: opts?.apiKey || cfg.tracing.api_key || process.env.TRACCIA_API_KEY,
+    endpoint: opts?.endpoint || cfg.tracing.endpoint || process.env.TRACCIA_ENDPOINT,
+  };
 }

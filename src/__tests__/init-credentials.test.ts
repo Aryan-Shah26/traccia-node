@@ -54,3 +54,72 @@ describe('init() credentials are the effective client config', () => {
     expect(resolveCredentials({ apiKey: 'per-call' }).apiKey).toBe('per-call');
   });
 });
+
+type ClientConfigModule = typeof import('../config/client-config');
+
+function loadSeparateCopy(): ClientConfigModule {
+  let mod: ClientConfigModule | undefined;
+  jest.isolateModules(() => {
+    mod = require('../config/client-config');
+  });
+  return mod!;
+}
+
+describe('client config store', () => {
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const name of CRED_ENV) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+
+  afterEach(async () => {
+    await stopTracing();
+    for (const name of CRED_ENV) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  });
+
+  it('is shared by separately bundled copies of the module (@traccia/sdk/auto and @traccia/sdk)', () => {
+    const autoCopy = loadSeparateCopy();
+    const sdkCopy = loadSeparateCopy();
+    expect(autoCopy).not.toBe(sdkCopy);
+
+    autoCopy.setClientConfig(API_KEY, ENDPOINT);
+    expect(sdkCopy.resolveClientCredentials()).toEqual({ apiKey: API_KEY, endpoint: ENDPOINT });
+
+    autoCopy.clearClientConfig();
+    expect(sdkCopy.getClientConfig()).toBeUndefined();
+  });
+
+  it('shares agent identity and run-scoped fail-closed across bundled copies', async () => {
+    let autoCopy: typeof import('../config/runtime-config') | undefined;
+    let sdkCopy: typeof import('../config/runtime-config') | undefined;
+    jest.isolateModules(() => {
+      autoCopy = require('../config/runtime-config');
+    });
+    jest.isolateModules(() => {
+      sdkCopy = require('../config/runtime-config');
+    });
+    expect(autoCopy).not.toBe(sdkCopy);
+
+    autoCopy!.setAgentId('agent-shared');
+    expect(sdkCopy!.getAgentId()).toBe('agent-shared');
+    await sdkCopy!.runIdentity({ pepEnabled: true, pepFailOpen: false }, () => {
+      expect(autoCopy!.pepEnabled()).toBe(true);
+      expect(autoCopy!.pepFailOpen()).toBe(false);
+    });
+    autoCopy!.setAgentId(undefined);
+  });
+
+  it('never pairs a key from env with the default endpoint init() stored', async () => {
+    await init({ agentId: 'agent-1', loadEnv: false });
+    process.env.TRACCIA_API_KEY = 'tr_test_env_key';
+    process.env.TRACCIA_ENDPOINT = 'http://127.0.0.2:9/v1/traces';
+
+    expect(resolveCredentials()).toEqual({ apiKey: 'tr_test_env_key', baseUrl: 'http://127.0.0.2:9' });
+  });
+});

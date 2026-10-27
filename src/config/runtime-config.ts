@@ -27,122 +27,140 @@ interface RuntimeConfig {
   attrTruncationLimit?: number;
 }
 
-let config: RuntimeConfig = {
-  autoInstrumentTools: false,
-  toolInclude: [],
-  maxToolSpans: 100,
-  maxSpanDepth: 10,
-  debug: false,
-};
+const RUNTIME_CONFIG_KEY = Symbol.for('traccia.runtimeConfig');
 
-const runIdentityStorage = new AsyncLocalStorage<RunIdentity>();
+interface SharedRuntimeConfig {
+  config: RuntimeConfig;
+  runIdentityStorage: AsyncLocalStorage<RunIdentity>;
+}
+
+/** One process shares the config and run identity across the separately bundled entry points. */
+function sharedRuntimeConfig(): SharedRuntimeConfig {
+  const host = globalThis as typeof globalThis & { [RUNTIME_CONFIG_KEY]?: SharedRuntimeConfig };
+  if (!host[RUNTIME_CONFIG_KEY]) {
+    host[RUNTIME_CONFIG_KEY] = {
+      config: {
+        autoInstrumentTools: false,
+        toolInclude: [],
+        maxToolSpans: 100,
+        maxSpanDepth: 10,
+        debug: false,
+      },
+      runIdentityStorage: new AsyncLocalStorage<RunIdentity>(),
+    };
+  }
+  return host[RUNTIME_CONFIG_KEY];
+}
+
+const shared = sharedRuntimeConfig();
+const runIdentityStorage = shared.runIdentityStorage;
 
 /**
  * Get the current runtime configuration.
  */
 export function getConfig(): RuntimeConfig {
-  return config;
+  return shared.config;
 }
 
 /**
  * Update the runtime configuration.
  */
 export function updateConfig(partial: Partial<RuntimeConfig>): void {
-  config = { ...config, ...partial };
+  shared.config = { ...shared.config, ...partial };
 }
 
 /**
  * Set auto-instrument tools flag.
  */
 export function setAutoInstrumentTools(value: boolean): void {
-  config.autoInstrumentTools = value;
+  shared.config.autoInstrumentTools = value;
 }
 
 /**
  * Set tool include list.
  */
 export function setToolInclude(tools: string[]): void {
-  config.toolInclude = tools;
+  shared.config.toolInclude = tools;
 }
 
 /**
  * Set max tool spans.
  */
 export function setMaxToolSpans(max: number): void {
-  config.maxToolSpans = max;
+  shared.config.maxToolSpans = max;
 }
 
 /**
  * Set max span depth.
  */
 export function setMaxSpanDepth(max: number): void {
-  config.maxSpanDepth = max;
+  shared.config.maxSpanDepth = max;
 }
 
 /**
  * Set session ID.
  */
 export function setSessionId(id?: string): void {
-  config.sessionId = id;
+  shared.config.sessionId = id;
 }
 
 /**
  * Set user ID.
  */
 export function setUserId(id?: string): void {
-  config.userId = id;
+  shared.config.userId = id;
 }
 
 /**
  * Set tenant ID.
  */
 export function setTenantId(id?: string): void {
-  config.tenantId = id;
+  shared.config.tenantId = id;
 }
 
 /**
  * Set project ID.
  */
 export function setProjectId(id?: string): void {
-  config.projectId = id;
+  shared.config.projectId = id;
 }
 
 export function getAgentId(): string | undefined {
-  return runIdentityStorage.getStore()?.agentId ?? config.agentId;
+  return runIdentityStorage.getStore()?.agentId ?? shared.config.agentId;
 }
 
 export function setAgentId(id?: string): void {
-  config.agentId = id;
+  shared.config.agentId = id;
 }
 
 export function setAgentName(name?: string): void {
-  config.agentName = name;
+  shared.config.agentName = name;
 }
 
 export function getAgentName(): string | undefined {
-  return runIdentityStorage.getStore()?.agentName ?? config.agentName;
+  return runIdentityStorage.getStore()?.agentName ?? shared.config.agentName;
 }
 
 export function setEnv(value?: string): void {
-  config.env = value;
+  shared.config.env = value;
 }
 
 export function getEnv(): string | undefined {
-  return config.env;
+  return shared.config.env;
 }
 
 /**
  * Set debug flag.
  */
 export function setDebug(value: boolean): void {
-  config.debug = value;
+  shared.config.debug = value;
 }
 
 /**
  * Set attribute truncation limit.
  */
 export function setAttrTruncationLimit(limit?: number): void {
-  config.attrTruncationLimit = limit;
+  shared.config.attrTruncationLimit = limit;
 }
 
 /**

@@ -135,7 +135,7 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
   // overrides from argument 'config' take precedence
   const apiKey = config.apiKey || loadedConfig.tracing.api_key || '';
   const endpoint = config.endpoint || loadedConfig.tracing.endpoint || DEFAULT_ENDPOINT;
-  // Policy, prompts and evals read this instead of re-loading env/file config.
+  // Policy, prompts and evals use this key/endpoint pair when it has a key.
   setClientConfig(apiKey, endpoint);
   const sampleRate = config.sampleRate ?? loadedConfig.tracing.sample_rate ?? 1.0;
   const useOtlp = config.useOtlp ?? loadedConfig.tracing.use_otlp ?? true;
