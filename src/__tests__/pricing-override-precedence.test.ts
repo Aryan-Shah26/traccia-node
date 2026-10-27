@@ -76,6 +76,22 @@ describe('pricingOverride precedence', () => {
     expect(r.matchPricingModelKey(model, vendor) === key).toBe(used);
   });
 
+  it('without a vendor, prices from the full table as traccia-py does', async () => {
+    // Python runs the override pre-pass only for a call with a vendor; an override under another
+    // key (azure/gpt-4o) does not price a vendor-less gpt-4o span.
+    const bundled = (await resolverWith()).compute('gpt-4o', 1000, 1000);
+    const r = await resolverWith({ 'azure/gpt-4o': { inputCost: 0.1, outputCost: 0.2 } });
+    expect(r.matchPricingModelKey('gpt-4o')).toBe('gpt-4o');
+    expect(r.compute('gpt-4o', 1000, 1000)).toBeCloseTo(bundled!, 12);
+  });
+
+  it('ranks override candidates by the exact dated name, as traccia-py does', async () => {
+    const r = await resolverWith({ 'gpt-4o': THREE_DOLLARS, 'gpt-4o-2024-08-06': { inputCost: 0.5, outputCost: 0.5 } });
+    expect(r.matchPricingModelKey('openai/gpt-4o-2024-08-06', 'openai')).toBe('gpt-4o-2024-08-06');
+    expect(r.compute('openai/gpt-4o-2024-08-06', 1000, 1000, 0, 0, 'openai')).toBeCloseTo(1.0, 9);
+    expect(r.matchPricingModelKey('openai/gpt-4o', 'openai')).toBe('gpt-4o');
+  });
+
   it('skips an override whose _provider names another provider', async () => {
     const r = await resolverWith({ [LLAMA]: { ...THREE_DOLLARS, _provider: 'together_ai' } });
     expect(r.matchPricingModelKey(LLAMA, 'groq')).toBe(`groq/${LLAMA}`);

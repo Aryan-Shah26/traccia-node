@@ -3,7 +3,7 @@
  */
 
 import { PricingRates, PricingTable, readBundledSnapshot } from '../config/pricing-config';
-import { inFamily, matchModel, PriceMatch, STRICT_VENDORS, vendorProviders } from './pricing-matcher';
+import { baseName, inFamily, matchModel, nameOf, PriceMatch, providerOf, STRICT_VENDORS, vendorProviders } from './pricing-matcher';
 
 export class CostResolver {
   private table: PricingTable;
@@ -138,25 +138,41 @@ export class CostResolver {
   }
 
   /**
-   * The user's pricingOverride entry for a model, matched like any other name among the
-   * overrides that can be the vendor's price (see overrideFitsVendor). It wins over the
-   * bundled snapshot, a local cache, and the vendor's own keys.
+   * For a call with a vendor, the user's pricingOverride entry for the model among those that
+   * can be the vendor's price (see overrideFitsVendor): same base name, the key for the exact
+   * name first, then the exact dated name, then the shortest. It wins over the bundled snapshot,
+   * a local cache and the vendor's own keys. Without a vendor there is no pre-pass: the full
+   * table is matched, where an override under the model's own key has replaced that entry.
+   * Same as traccia-py's cost_engine._match.
    */
   private lookupOverride(model: string, vendor?: string): PriceMatch | undefined {
+    if (!vendorProviders(vendor).length || !String(model || '').trim()) {
+      return undefined;
+    }
     if (this.overrideEntries === undefined) {
       this.overrideEntries = Object.entries(this.table).filter(([, rates]) => rates?._override);
     }
-    if (!this.overrideEntries.length) {
+    const base = baseName(model);
+    const keys = this.overrideEntries
+      .filter(([key, rates]) => baseName(key) === base && overrideFitsVendor(key, rates, model, vendor!))
+      .map(([key]) => key);
+    if (!keys.length) {
       return undefined;
     }
-    const fitting = vendor
-      ? this.overrideEntries.filter(([key, rates]) => overrideFitsVendor(key, rates, model, vendor))
-      : this.overrideEntries;
-    if (!fitting.length) {
-      return undefined;
-    }
-    const match = new CostResolver(Object.fromEntries(fitting)).resolveBase(model);
-    return match && { ...match, ambiguous: false };
+    const wanted = nameOf(model);
+    const rank = (key: string): Array<number | string> => [
+      key === model ? 0 : 1,
+      nameOf(key) === wanted ? 0 : 1,
+      key.length,
+      key,
+    ];
+    const key = keys.reduce((best, k) => (before(rank(k), rank(best)) ? k : best));
+    return {
+      key,
+      kind: key === model ? 'exact' : 'base',
+      provider: providerOf(key, this.table[key]),
+      ambiguous: false,
+    };
   }
 
   /**
@@ -272,6 +288,14 @@ function overrideFitsVendor(key: string, pricing: PricingRates, model: string, v
   }
   const [provider, ...rest] = keyPath;
   return same(rest, modelPath) && inFamily(provider, families);
+}
+
+/** Whether rank `a` sorts before rank `b`, element by element (a Python tuple comparison). */
+function before(a: Array<number | string>, b: Array<number | string>): boolean {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
 }
 
 /** The table itself when already frozen, else a frozen shallow copy (the caller's object is left alone). */
