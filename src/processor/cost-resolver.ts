@@ -135,17 +135,18 @@ export class CostResolver {
 
   /**
    * The user's pricingOverride entry for a model, matched like any other name. It wins over
-   * bundled and cached prices, including a strict vendor's own entries, unless it names
-   * another provider in its _provider/provider field.
+   * bundled and cached prices, including a strict vendor's own entries, when it can be the
+   * vendor's price (see overrideFitsVendor).
    */
   private lookupOverride(model: string, strict?: string): [string, PricingRates] | undefined {
     const overrides = this.overrides();
-    const hit = overrides?.lookupPrice(model);
-    if (!hit || !strict) {
-      return hit;
+    if (!overrides || !strict) {
+      return overrides?.lookupPrice(model);
     }
-    const provider = hit[1]._provider ?? hit[1].provider;
-    return provider && !inVendorFamily(hit[0], hit[1], strict) ? undefined : hit;
+    const fitting = Object.entries(overrides.table).filter(([key, rates]) =>
+      overrideFitsVendor(key, rates, model, strict)
+    );
+    return fitting.length ? new CostResolver(Object.fromEntries(fitting)).lookupPrice(model) : undefined;
   }
 
   private overrides(): CostResolver | undefined {
@@ -304,6 +305,33 @@ function modelName(name: string): string {
 
 function baseName(name: string): string {
   return modelName(name).replace(SUFFIX, '');
+}
+
+/**
+ * Whether an override can price a call to `model` made through a strict vendor. An override
+ * that names a provider (_provider/provider) must name the vendor's family. Otherwise its key's
+ * path (every segment but the last) must be empty, the model's path, or a vendor-family
+ * provider followed by the model's path, so "together_ai/llama-3.3-70b-versatile" never prices
+ * Groq's "llama-3.3-70b-versatile". The last segment is matched by name as usual. traccia-py
+ * applies the same rule.
+ */
+function overrideFitsVendor(key: string, pricing: PricingRates, model: string, vendor: string): boolean {
+  if (pricing?._provider ?? pricing?.provider) {
+    return inVendorFamily(key, pricing, vendor);
+  }
+  const path = (name: string): string[] => name.toLowerCase().split('/').slice(0, -1);
+  const lowerModel = model.trim().toLowerCase();
+  const modelPath = path(lowerModel.startsWith(vendor + '/') ? lowerModel.slice(vendor.length + 1) : lowerModel);
+  const keyPath = path(key.trim());
+  const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((s, i) => s === b[i]);
+  if (keyPath.length === 0 || same(keyPath, modelPath)) {
+    return true;
+  }
+  const [provider, ...rest] = keyPath;
+  return (
+    same(rest, modelPath) &&
+    (provider === vendor || provider.startsWith(vendor + '_') || provider.startsWith(vendor + '-'))
+  );
 }
 
 /**
