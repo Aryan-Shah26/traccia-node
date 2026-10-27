@@ -43,30 +43,48 @@ import { configurePrompts } from './prompts';
 import { patchGemini } from './instrumentation/gemini';
 import { patchGroq, patchGroqEsm } from './instrumentation/groq';
 import { patchAxios } from './instrumentation/axios';
+import { patchOpenAI, patchOpenAIResponses } from './instrumentation/openai';
+import { patchAnthropic } from './instrumentation/anthropic';
 
-let globalProvider: TracerProvider | null = null;
-let started = false;
+const RUNTIME_KEY = Symbol.for('traccia.runtime');
+
+export interface TracciaRuntime {
+  provider: TracerProvider | null;
+  started: boolean;
+  taskChildCosts?: import('async_hooks').AsyncLocalStorage<Array<{ cost: number | null }>>;
+  costProvider?: TracerProvider | null;
+}
+
+/** One process shares this object across the CLI bundle and the public SDK. */
+export function runtimeState(): TracciaRuntime {
+  const host = globalThis as typeof globalThis & { [RUNTIME_KEY]?: TracciaRuntime };
+  if (!host[RUNTIME_KEY]) {
+    host[RUNTIME_KEY] = { provider: null, started: false };
+  }
+  return host[RUNTIME_KEY];
+}
 
 /** True after a successful init()/startTracing() (OTLP export configured). */
 export function isTracingStarted(): boolean {
-  return started;
+  return runtimeState().started;
 }
 
 /**
  * Get the global tracer provider.
  */
 export function getTracerProvider(): TracerProvider {
-  if (!globalProvider) {
-    globalProvider = new TracerProvider();
+  const state = runtimeState();
+  if (!state.provider) {
+    state.provider = new TracerProvider();
   }
-  return globalProvider;
+  return state.provider;
 }
 
 /**
  * Set the global tracer provider.
  */
 export function setTracerProvider(provider: TracerProvider): void {
-  globalProvider = provider;
+  runtimeState().provider = provider;
 }
 
 /**
@@ -80,11 +98,11 @@ export function getTracer(name: string, version?: string): ITracer {
  * Initialize tracing with automatic setup.
  */
 export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
-  if (started) {
+  if (runtimeState().started) {
     return getTracerProvider();
   }
 
-  started = true;
+  runtimeState().started = true;
 
   const basicProvider = new BasicTracerProvider();
   trace.setGlobalTracerProvider(basicProvider);
@@ -249,10 +267,6 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
     setResolver(new CostResolver(pricing, pricingSource, pricingGeneratedAt));
   }
 
-  if (config.enableSpanLogging || loadedConfig.logging.enable_span_logging) {
-    provider.addSpanProcessor(new LoggingSpanProcessor());
-  }
-
   provider.addSpanProcessor(
     new AgentEnrichmentProcessor({
       agentConfigPath: agentConfigPath,
@@ -280,6 +294,11 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
   }
   if (redactPii) {
     provider.addSpanProcessor(new RedactionSpanProcessor());
+  }
+
+  // Log after enrichment and redaction so span logs never contain unredacted values.
+  if (config.enableSpanLogging || loadedConfig.logging.enable_span_logging) {
+    provider.addSpanProcessor(new LoggingSpanProcessor());
   }
 
   // Add batch processor with exporter
@@ -313,6 +332,13 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
     } catch {
       /* optional peer */
     }
+    for (const patch of [patchOpenAI, patchOpenAIResponses, patchAnthropic]) {
+      try {
+        patch();
+      } catch {
+        /* optional peer */
+      }
+    }
   }
 
   return provider;
@@ -322,15 +348,17 @@ export async function init(config: SDKConfig = {}): Promise<TracerProvider> {
  * Stop tracing and shutdown all processors.
  */
 export async function stopTracing(): Promise<void> {
-  if (!globalProvider) {
+  const state = runtimeState();
+  if (!state.provider) {
     return;
   }
 
   // Governance settles run in the background; let them reach the server first.
   await flushPendingSettles().catch(() => undefined);
-  await globalProvider.shutdown();
-  started = false;
-  globalProvider = null;
+  await state.provider.shutdown();
+  state.started = false;
+  state.provider = null;
+  state.costProvider = null;
 }
 
 /**
