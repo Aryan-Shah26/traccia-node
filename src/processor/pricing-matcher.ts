@@ -33,6 +33,24 @@ const VENDOR_PROVIDERS: Record<string, string[]> = {
 // The SDKs' cost engines apply the same rule (STRICT_VENDORS).
 export const STRICT_VENDORS: ReadonlySet<string> = new Set(['groq']);
 
+// First-party names the pricing table lists only under a dated key (the same as cost-resolver's
+// MODEL_ALIASES). Looked up by nameOf; a target missing from the table changes nothing.
+const MODEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  'claude-3-opus': 'claude-3-opus-20240229',
+  'claude-3-opus-latest': 'claude-3-opus-20240229',
+  'claude-3-haiku': 'claude-3-haiku-20240307',
+  'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
+  'claude-3-5-haiku-latest': 'claude-3-5-haiku-20241022',
+  'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
+  'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
+  'claude-3-7-sonnet': 'claude-3-7-sonnet-20250219',
+  'claude-3-7-sonnet-latest': 'claude-3-7-sonnet-20250219',
+  'claude-sonnet-4': 'claude-sonnet-4-20250514',
+  'claude-sonnet-4-0': 'claude-sonnet-4-20250514',
+  'claude-opus-4': 'claude-opus-4-20250514',
+  'claude-opus-4-0': 'claude-opus-4-20250514',
+});
+
 export interface PriceMatch {
   key: string;
   kind: 'exact' | 'base';
@@ -125,6 +143,11 @@ export function matchModel(
   vendor?: string | null,
 ): PriceMatch | undefined {
   const keys = candidateKeys(model, table);
+  const named = model && String(model).trim() ? nameOf(String(model)) : '';
+  const alias = hasOwn(MODEL_ALIASES, named) ? MODEL_ALIASES[named] : undefined;
+  if (alias !== undefined && table && hasOwn(table, alias) && !keys.includes(alias)) {
+    keys.push(alias);
+  }
   if (!keys.length || !table) {
     return undefined;
   }
@@ -132,12 +155,14 @@ export function matchModel(
   const wanted = nameOf(name);
   const providers = vendorProviders(vendor);
   const own = (key: string): boolean => inFamily(providerOf(key, table[key]), providers);
-  // Same order as the Python sort key: (not own, not exact, not same name, length, key). The
-  // vendor's own keys first; then a key for the exact name (with its date or -latest) before
-  // the shortest key, also when the vendor has no key of its own.
+  // Same order as the Python sort key: (not own, not exact, not alias, not same name, length,
+  // key). The vendor's own keys first; then the exact key, the alias target, a key for the
+  // exact name (with its date or -latest), and the shortest key, also when the vendor has no
+  // key of its own.
   const rank = (key: string): Array<number | string> => [
     own(key) ? 0 : 1,
     key === name ? 0 : 1,
+    key === alias ? 0 : 1,
     nameOf(key) === wanted ? 0 : 1,
     key.length,
     key,
