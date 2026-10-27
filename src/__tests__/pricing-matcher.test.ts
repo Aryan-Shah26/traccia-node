@@ -106,4 +106,15 @@ describe('CostAnnotatingProcessor pricing match', () => {
     });
     expect(resolver.matchPricingModelKey('gpt-4o-mini')).toBeUndefined();
   });
+
+  it('never returns a key removed from a table edited in place with the same size', () => {
+    const table: Record<string, unknown> = { 'gpt-4o': { prompt: 1 }, 'azure/gpt-4o': { prompt: 2 } };
+    expect(matchModel('gpt-4o', table)?.key).toBe('gpt-4o');
+    delete table['gpt-4o'];
+    table['other-model'] = { prompt: 3 }; // same size: the cached index is reused
+    expect(matchModel('gpt-4o', table)?.key).toBe('azure/gpt-4o');
+    delete table['azure/gpt-4o'];
+    table['another-model'] = { prompt: 4 };
+    expect(matchModel('gpt-4o', table)).toBeUndefined();
+  });
 });

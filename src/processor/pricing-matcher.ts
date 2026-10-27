@@ -44,17 +44,25 @@ export interface PriceMatch {
 
 type Table = Record<string, unknown>;
 
-/** Lower-cased, without the provider path or region; the date is kept. */
-function nameOf(name: string): string {
+/**
+ * Lower-cased, without the provider path or region; the date is kept. An OpenAI fine-tune
+ * (ft:<base>:<org>:<suffix>:<id>) is named ft:<base>.
+ */
+export function nameOf(name: string): string {
   const tail = name.trim().toLowerCase().split('/').pop() ?? '';
-  return tail.replace(REGION, '');
+  const named = tail.replace(REGION, '');
+  return named.startsWith('ft:') ? named.split(':').slice(0, 2).join(':') : named;
 }
 
 export function baseName(name: string): string {
   return nameOf(name).replace(SUFFIX, '');
 }
 
-function providerOf(key: string, entry: unknown): string {
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+export function providerOf(key: string, entry: unknown): string {
   let provider =
     entry && typeof entry === 'object' ? (entry as { _provider?: unknown })._provider : undefined;
   if (!provider && key.includes('/')) {
@@ -106,7 +114,8 @@ export function candidateKeys(model: string | null | undefined, table: Table | n
     return [];
   }
   const base = baseName(String(model));
-  return base ? [...(indexFor(table).get(base) ?? [])] : [];
+  // The index can be stale for a table edited in place without changing size.
+  return base ? (indexFor(table).get(base) ?? []).filter((k) => hasOwn(table, k)) : [];
 }
 
 /** Return the pricing key for `model`, or undefined. `vendor` is the span's llm.vendor. */
@@ -123,12 +132,13 @@ export function matchModel(
   const wanted = nameOf(name);
   const providers = vendorProviders(vendor);
   const own = (key: string): boolean => inFamily(providerOf(key, table[key]), providers);
-  // Same order as the Python sort key: (not own, not exact, not own same version, length, key).
-  // A dated version only beats the generic key among the vendor's own keys.
+  // Same order as the Python sort key: (not own, not exact, not same name, length, key). The
+  // vendor's own keys first; then a key for the exact name (with its date or -latest) before
+  // the shortest key, also when the vendor has no key of its own.
   const rank = (key: string): Array<number | string> => [
     own(key) ? 0 : 1,
     key === name ? 0 : 1,
-    own(key) && nameOf(key) === wanted ? 0 : 1,
+    nameOf(key) === wanted ? 0 : 1,
     key.length,
     key,
   ];
