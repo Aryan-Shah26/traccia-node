@@ -63,13 +63,13 @@ function providerOf(key: string, entry: unknown): string {
   return String(provider || '').toLowerCase();
 }
 
-function vendorProviders(vendor: string | null | undefined): string[] {
+export function vendorProviders(vendor: string | null | undefined): string[] {
   const v = String(vendor || '').trim().toLowerCase();
   if (!v) return [];
   return Object.prototype.hasOwnProperty.call(VENDOR_PROVIDERS, v) ? VENDOR_PROVIDERS[v] : [v];
 }
 
-function inFamily(provider: string, families: string[]): boolean {
+export function inFamily(provider: string, families: string[]): boolean {
   return families.some(
     (f) => provider === f || provider.startsWith(`${f}_`) || provider.startsWith(`${f}-`),
   );

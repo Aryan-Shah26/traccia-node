@@ -440,7 +440,7 @@ describe('pricing-config', () => {
                 'gpt-4': { inputCost: 999, outputCost: 999 },
             });
 
-            expect(pricing['gpt-4']).toEqual({ inputCost: 999, outputCost: 999 });
+            expect(pricing['gpt-4']).toEqual({ inputCost: 999, outputCost: 999, _override: true });
             expect(source).toBe('override');
         });
 

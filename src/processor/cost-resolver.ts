@@ -3,7 +3,7 @@
  */
 
 import { PricingRates, PricingTable, readBundledSnapshot } from '../config/pricing-config';
-import { matchModel, PriceMatch, STRICT_VENDORS } from './pricing-matcher';
+import { inFamily, matchModel, PriceMatch, STRICT_VENDORS, vendorProviders } from './pricing-matcher';
 
 export class CostResolver {
   private table: PricingTable;
@@ -13,6 +13,8 @@ export class CostResolver {
   // table size, unlike a per-model cache keyed by caller-supplied names.
   private lowerIndex?: Map<string, string>;
   private tailIndex?: Map<string, string>;
+  /** The pricingOverride entries of the current table, built on first use and dropped by update(). */
+  private overrideEntries?: Array<[string, PricingRates]>;
 
   constructor(
     pricingTable: PricingTable,
@@ -47,6 +49,7 @@ export class CostResolver {
     this.table = frozen(pricingTable);
     this.lowerIndex = undefined;
     this.tailIndex = undefined;
+    this.overrideEntries = undefined;
     if (source) {
       this.source = source;
     }
@@ -116,6 +119,10 @@ export class CostResolver {
    * claude-3-opus@20240229), which base names do not reach.
    */
   private resolve(model: string, vendor?: string): PriceMatch | undefined {
+    return this.lookupOverride(model, vendor) ?? this.resolveBase(model, vendor);
+  }
+
+  private resolveBase(model: string, vendor?: string): PriceMatch | undefined {
     const match = matchModel(model, this.table, vendor);
     // For any other vendor the matcher answers whenever the table has the base name.
     if (match || STRICT_VENDORS.has(String(vendor || '').trim().toLowerCase())) {
@@ -128,6 +135,28 @@ export class CostResolver {
     const [key, entry] = found;
     const provider = String((entry as { _provider?: unknown })._provider || (key.includes('/') ? key.split('/', 1)[0] : '')).toLowerCase();
     return { key, kind: key === model ? 'exact' : 'base', provider, ambiguous: false };
+  }
+
+  /**
+   * The user's pricingOverride entry for a model, matched like any other name among the
+   * overrides that can be the vendor's price (see overrideFitsVendor). It wins over the
+   * bundled snapshot, a local cache, and the vendor's own keys.
+   */
+  private lookupOverride(model: string, vendor?: string): PriceMatch | undefined {
+    if (this.overrideEntries === undefined) {
+      this.overrideEntries = Object.entries(this.table).filter(([, rates]) => rates?._override);
+    }
+    if (!this.overrideEntries.length) {
+      return undefined;
+    }
+    const fitting = vendor
+      ? this.overrideEntries.filter(([key, rates]) => overrideFitsVendor(key, rates, model, vendor))
+      : this.overrideEntries;
+    if (!fitting.length) {
+      return undefined;
+    }
+    const match = new CostResolver(Object.fromEntries(fitting)).resolveBase(model);
+    return match && { ...match, ambiguous: false };
   }
 
   /**
@@ -215,6 +244,34 @@ export function getResolver(): CostResolver {
 export function setResolver(resolver: CostResolver): void {
   const globalAny = globalThis as any;
   globalAny[GLOBAL_RESOLVER_KEY] = resolver;
+}
+
+/**
+ * Whether an override can price a call to `model` made through `vendor`. An override that names a
+ * provider (_provider/provider) must name the vendor's provider family (with the matcher's
+ * aliases, so google_gemini covers gemini). Otherwise its key's path (every segment but the
+ * last) must be empty, the model's path, or a vendor-family provider followed by the model's
+ * path, so "together_ai/llama-3.3-70b-versatile" never prices Groq's "llama-3.3-70b-versatile"
+ * while "openai/gpt-oss-120b", Groq's own model id, does. traccia-py applies the same rule.
+ */
+function overrideFitsVendor(key: string, pricing: PricingRates, model: string, vendor: string): boolean {
+  const families = vendorProviders(vendor);
+  const named = String(pricing?._provider ?? pricing?.provider ?? '').toLowerCase();
+  if (named) {
+    return inFamily(named, families);
+  }
+  const path = (name: string): string[] => name.trim().toLowerCase().split('/').slice(0, -1);
+  let modelPath = path(model);
+  if (modelPath.length && inFamily(modelPath[0], families)) {
+    modelPath = modelPath.slice(1); // "groq/llama-3.3-70b-versatile": the vendor's own prefix
+  }
+  const keyPath = path(key);
+  const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((s, i) => s === b[i]);
+  if (keyPath.length === 0 || same(keyPath, modelPath)) {
+    return true;
+  }
+  const [provider, ...rest] = keyPath;
+  return same(rest, modelPath) && inFamily(provider, families);
 }
 
 /** The table itself when already frozen, else a frozen shallow copy (the caller's object is left alone). */
