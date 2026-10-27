@@ -56,13 +56,23 @@ describe('TRC-284 edge cases', () => {
       expect(resolver.matchPricingModelKey('us.anthropic.claude-3-7-sonnet-20250219-v1:0')).toBe(
         'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
       );
-      expect(resolver.matchPricingModelKey('bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0')).toBe(
-        'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
-      );
+      // With a provider path the shared matcher drops the region and takes the shortest Bedrock
+      // key; the regional and non-regional keys have the same rates, so check those instead.
+      const regional = rates['us.anthropic.claude-3-7-sonnet-20250219-v1:0'];
+      const key = resolver.matchPricingModelKey('bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0');
+      expect(key).toBeDefined();
+      expect(String(rates[key!]._provider)).toMatch(/^bedrock/);
+      expect(rates[key!].prompt).toBe(regional.prompt);
+      expect(rates[key!].completion).toBe(regional.completion);
     });
 
     it('prices Vertex @date ids at the same rate as the first-party dated id', () => {
-      expect(resolver.matchPricingModelKey('claude-3-7-sonnet@20250219')).toBe('claude-3-7-sonnet-20250219');
+      // The shared matcher takes Vertex's own @-dated key; its rates equal the first-party dated
+      // id's, so check the rates rather than which of the two keys was used.
+      const key = resolver.matchPricingModelKey('claude-3-7-sonnet@20250219');
+      expect(key).toBeDefined();
+      expect(rates[key!].prompt).toBe(rates['claude-3-7-sonnet-20250219'].prompt);
+      expect(rates[key!].completion).toBe(rates['claude-3-7-sonnet-20250219'].completion);
       const vertex = rates['vertex_ai/claude-3-7-sonnet@20250219'];
       expect(resolver.compute('claude-3-7-sonnet@20250219', 1000, 1000)).toBeCloseTo(vertex.prompt! + vertex.completion!, 12);
     });

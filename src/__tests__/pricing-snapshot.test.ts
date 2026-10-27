@@ -207,7 +207,6 @@ describe('TRC-284 shipped pricing snapshot', () => {
       'gpt-5.9-ultra',
       'claude-9-opus',
       'my-finetune',
-      'ft:gpt-4o-mini:acme::abc123',
       '',
       '   ',
       'constructor', // prototype keys must not resolve
@@ -216,6 +215,14 @@ describe('TRC-284 shipped pricing snapshot', () => {
     ])('leaves %p unpriced', (model) => {
       expect(resolver.matchPricingModelKey(model)).toBeUndefined();
       expect(resolver.compute(model, 1000, 1000)).toBeUndefined();
+    });
+
+    it('prices an OpenAI fine-tune id at its ft: key', () => {
+      // The shared matcher names ft:<base>:<org>:<suffix>:<id> as ft:<base>, so a fine-tune takes
+      // the fine-tune price, never the plain base model's.
+      expect(resolver.matchPricingModelKey('ft:gpt-4o-mini:acme::abc123')).toBe('ft:gpt-4o-mini-2024-07-18');
+      expect(snapshotJson.models['ft:gpt-4o-mini-2024-07-18']).toMatchObject({ prompt: 0.0003, completion: 0.0012 });
+      expect(resolver.compute('ft:gpt-4o-mini:acme::abc123', 1000, 1000)).toBeCloseTo(0.0003 + 0.0012, 12);
     });
   });
 });
