@@ -20,6 +20,8 @@ export interface PricingRates {
   /** Provider the entry belongs to, when the snapshot records it (e.g. "groq"). */
   _provider?: string;
   provider?: string;
+  /** Set on entries from the user's pricingOverride, which take precedence over every other entry. */
+  _override?: boolean;
 }
 
 export interface PricingTable {
@@ -255,7 +257,10 @@ export async function loadPricingWithSource(
   }
 
   if (override) {
-    pricing = { ...pricing, ...override };
+    pricing = { ...pricing };
+    for (const [model, rates] of Object.entries(override)) {
+      pricing[model] = { ...rates, _override: true };
+    }
     source = 'override';
   }
 

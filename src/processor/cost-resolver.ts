@@ -21,6 +21,8 @@ export class CostResolver {
   private generatedAt: string;
   /** The vendor keys of the current table by base name, built on first use per vendor. */
   private vendorIndex?: { table: PricingTable; vendor: string; keys: Map<string, string[]> };
+  /** The pricingOverride entries of the current table, built on first use. */
+  private overrideIndex?: { table: PricingTable; resolver?: CostResolver };
   // Per-table indexes, built on first lookup and dropped by update(). Bounded by the
   // table size, unlike a per-model cache keyed by caller-supplied names.
   private lowerIndex?: Map<string, string>;
@@ -125,7 +127,36 @@ export class CostResolver {
 
   private match(model: string, vendor?: string): [string, PricingRates] | undefined {
     const strict = strictVendor(vendor);
-    return strict ? this.lookupVendorPrice(model, strict) : this.lookupPrice(model);
+    return (
+      this.lookupOverride(model, strict) ??
+      (strict ? this.lookupVendorPrice(model, strict) : this.lookupPrice(model))
+    );
+  }
+
+  /**
+   * The user's pricingOverride entry for a model, matched like any other name. It wins over
+   * bundled and cached prices, including a strict vendor's own entries, unless it names
+   * another provider in its _provider/provider field.
+   */
+  private lookupOverride(model: string, strict?: string): [string, PricingRates] | undefined {
+    const overrides = this.overrides();
+    const hit = overrides?.lookupPrice(model);
+    if (!hit || !strict) {
+      return hit;
+    }
+    const provider = hit[1]._provider ?? hit[1].provider;
+    return provider && !inVendorFamily(hit[0], hit[1], strict) ? undefined : hit;
+  }
+
+  private overrides(): CostResolver | undefined {
+    const cached = this.overrideIndex;
+    if (cached && cached.table === this.table) {
+      return cached.resolver;
+    }
+    const entries = Object.entries(this.table).filter(([, rates]) => rates?._override);
+    const resolver = entries.length ? new CostResolver(Object.fromEntries(entries)) : undefined;
+    this.overrideIndex = { table: this.table, resolver };
+    return resolver;
   }
 
   /**

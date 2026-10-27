@@ -84,7 +84,7 @@ describe('TRC-284 shipped pricing snapshot', () => {
       const [pricing, source, generatedAt] = await loadPricingWithSource({ 'my-model': { inputCost: 1, outputCost: 2 } });
       expect(source).toBe('override');
       expect(generatedAt).toBe(snapshotJson.generated_at);
-      expect(pricing['my-model']).toEqual({ inputCost: 1, outputCost: 2 });
+      expect(pricing['my-model']).toEqual({ inputCost: 1, outputCost: 2, _override: true });
       expect(pricing['gpt-4o-mini']).toBeDefined();
     });
 
