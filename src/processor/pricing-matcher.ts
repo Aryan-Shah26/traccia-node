@@ -31,7 +31,7 @@ const VENDOR_PROVIDERS: Record<string, string[]> = {
 // SDK also calls OpenAI-compatible providers, so "openai" is not one). Their calls are priced
 // only from that provider's keys, never from another provider's key for the same model name.
 // The SDKs' cost engines apply the same rule (STRICT_VENDORS).
-const STRICT_VENDORS: ReadonlySet<string> = new Set(['groq']);
+export const STRICT_VENDORS: ReadonlySet<string> = new Set(['groq']);
 
 export interface PriceMatch {
   key: string;
@@ -75,12 +75,17 @@ function inFamily(provider: string, families: string[]): boolean {
   );
 }
 
-// Base name -> keys, per table. Rebuilt when the table's size changes.
+// Base name -> keys, per table. Rebuilt when the table's size changes. Counting a table's keys
+// is O(n) in JavaScript (len() is O(1) in Python), so a frozen table, which cannot change, is
+// not recounted.
 const indexes = new WeakMap<Table, { size: number; index: Map<string, string[]> }>();
 
 function indexFor(table: Table): Map<string, string[]> {
-  const keys = Object.keys(table);
   const cached = indexes.get(table);
+  if (cached && Object.isFrozen(table)) {
+    return cached.index;
+  }
+  const keys = Object.keys(table);
   if (cached && cached.size === keys.length) {
     return cached.index;
   }
