@@ -11,7 +11,7 @@ import * as path from 'path';
 import { BUNDLED_SNAPSHOT_FILE, loadPricingWithSource, readBundledSnapshot } from '../config/pricing-config';
 import { CostResolver, MODEL_ALIASES, modelCandidates } from '../processor/cost-resolver';
 
-type Rates = { prompt?: number; completion?: number; cached_prompt?: number; cache_write?: number };
+type Rates = { prompt?: number; completion?: number; cached_prompt?: number; cache_write?: number; _provider?: string };
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const snapshotJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'data', BUNDLED_SNAPSHOT_FILE), 'utf-8'));
@@ -56,13 +56,23 @@ describe('TRC-284 edge cases', () => {
       expect(resolver.matchPricingModelKey('us.anthropic.claude-3-7-sonnet-20250219-v1:0')).toBe(
         'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
       );
-      expect(resolver.matchPricingModelKey('bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0')).toBe(
-        'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
-      );
+      // With a provider path the shared matcher drops the region and takes the shortest Bedrock
+      // key; the regional and non-regional keys have the same rates, so check those instead.
+      const regional = rates['us.anthropic.claude-3-7-sonnet-20250219-v1:0'];
+      const key = resolver.matchPricingModelKey('bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0');
+      expect(key).toBeDefined();
+      expect(String(rates[key!]._provider)).toMatch(/^bedrock/);
+      expect(rates[key!].prompt).toBe(regional.prompt);
+      expect(rates[key!].completion).toBe(regional.completion);
     });
 
     it('prices Vertex @date ids at the same rate as the first-party dated id', () => {
-      expect(resolver.matchPricingModelKey('claude-3-7-sonnet@20250219')).toBe('claude-3-7-sonnet-20250219');
+      // The shared matcher takes Vertex's own @-dated key; its rates equal the first-party dated
+      // id's, so check the rates rather than which of the two keys was used.
+      const key = resolver.matchPricingModelKey('claude-3-7-sonnet@20250219');
+      expect(key).toBeDefined();
+      expect(rates[key!].prompt).toBe(rates['claude-3-7-sonnet-20250219'].prompt);
+      expect(rates[key!].completion).toBe(rates['claude-3-7-sonnet-20250219'].completion);
       const vertex = rates['vertex_ai/claude-3-7-sonnet@20250219'];
       expect(resolver.compute('claude-3-7-sonnet@20250219', 1000, 1000)).toBeCloseTo(vertex.prompt! + vertex.completion!, 12);
     });
@@ -225,13 +235,14 @@ describe('TRC-284 edge cases', () => {
 
   describe('bounded state and performance', () => {
     const indexSize = (r: CostResolver): number => {
-      const internals = r as unknown as { lowerIndex: Map<string, string>; tailIndex: Map<string, string> };
-      return internals.lowerIndex.size + internals.tailIndex.size;
+      // The fallback lookup's indexes; the shared matcher's index is per table, not per name.
+      const internals = r as unknown as { lowerIndex?: Map<string, string>; tailIndex?: Map<string, string> };
+      return (internals.lowerIndex?.size ?? 0) + (internals.tailIndex?.size ?? 0);
     };
 
     it('lookups of many unique model names do not grow resolver state', () => {
       const r = new CostResolver(snapshotJson.models);
-      r.matchPricingModelKey('GPT-4O-MINI'); // builds the indexes (not an own-key hit)
+      r.matchPricingModelKey('ft:warm-up'); // a miss: the fallback lookup builds its indexes
       const before = indexSize(r);
       for (let i = 0; i < 5000; i++) r.matchPricingModelKey(`ft:custom-model-${i}`);
       expect(indexSize(r)).toBe(before);

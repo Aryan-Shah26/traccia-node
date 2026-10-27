@@ -361,7 +361,11 @@ function estimateTokens(kwargs: Record<string, unknown>): number | undefined {
   return Math.max(Math.floor(blob.length / 4), 1);
 }
 
-export async function enforceLlmCall(kwargs: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+/** Check policy before an LLM call. `vendor` is the span's llm.vendor; Spend Cap uses it to pick that provider's price. */
+export async function enforceLlmCall(
+  kwargs: Record<string, unknown>,
+  vendor?: string,
+): Promise<Record<string, unknown> | undefined> {
   if (!pepEnabled()) {
     return undefined;
   }
@@ -374,6 +378,9 @@ export async function enforceLlmCall(kwargs: Record<string, unknown>): Promise<R
     input_tokens: estimateTokens(kwargs),
     retrieval: retrievalContext(traceId),
   };
+  if (vendor) {
+    context.vendor = vendor;
+  }
   const prompt = promptContext();
   if (Object.keys(prompt).length) {
     context.prompt = prompt;

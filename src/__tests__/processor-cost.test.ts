@@ -91,7 +91,7 @@ describe('CostAnnotatingProcessor alignment', () => {
     expect(span.attributes['llm.cost.usd']).toBe(0.99);
   });
 
-  it('matches dated model names via suffix normalization', () => {
+  it('matches dated model names by base name', () => {
     const proc = makeProcessor();
     const span = new FakeSpan({
       'llm.model': 'gpt-4o-2024-08-06',
