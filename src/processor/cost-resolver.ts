@@ -3,6 +3,7 @@
  */
 
 import { PricingRates, PricingTable, readBundledSnapshot } from '../config/pricing-config';
+import { baseName, inFamily, matchModel, nameOf, PriceMatch, providerOf, STRICT_VENDORS, vendorProviders } from './pricing-matcher';
 
 export class CostResolver {
   private table: PricingTable;
@@ -12,13 +13,15 @@ export class CostResolver {
   // table size, unlike a per-model cache keyed by caller-supplied names.
   private lowerIndex?: Map<string, string>;
   private tailIndex?: Map<string, string>;
+  /** The pricingOverride entries of the current table, built on first use and dropped by update(). */
+  private overrideEntries?: Array<[string, PricingRates]>;
 
   constructor(
     pricingTable: PricingTable,
     source: string = 'bundled',
     generatedAt: string = 'unknown'
   ) {
-    this.table = pricingTable;
+    this.table = frozen(pricingTable);
     this.source = source;
     this.generatedAt = generatedAt;
   }
@@ -43,9 +46,10 @@ export class CostResolver {
     source?: string,
     generatedAt?: string
   ): void {
-    this.table = pricingTable;
+    this.table = frozen(pricingTable);
     this.lowerIndex = undefined;
     this.tailIndex = undefined;
+    this.overrideEntries = undefined;
     if (source) {
       this.source = source;
     }
@@ -64,8 +68,9 @@ export class CostResolver {
     completionTokens: number,
     cacheReadTokens = 0,
     cacheWriteTokens = 0,
+    vendor?: string,
   ): number | undefined {
-    return this.computeDetailed(model, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)?.cost;
+    return this.computeDetailed(model, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, vendor)?.cost;
   }
 
   public computeDetailed(
@@ -74,13 +79,14 @@ export class CostResolver {
     completionTokens: number,
     cacheReadTokens = 0,
     cacheWriteTokens = 0,
-  ): { cost: number; cacheFallback: boolean } | undefined {
-    const matched = this.lookupPrice(model);
-    if (!matched) {
+    vendor?: string,
+  ): { cost: number; cacheFallback: boolean; match: PriceMatch } | undefined {
+    const match = this.resolve(model, vendor);
+    if (!match) {
       return undefined;
     }
 
-    const [, pricing] = matched;
+    const pricing = this.table[match.key];
     const inputRate = rate(pricing, "inputCost", "prompt");
     const outputRate = rate(pricing, "outputCost", "completion");
     let cost = 0;
@@ -99,11 +105,74 @@ export class CostResolver {
     }
 
     if (cost <= 0) return undefined;
-    return { cost, cacheFallback };
+    return { cost, cacheFallback, match };
   }
 
-  public matchPricingModelKey(model: string): string | undefined {
-    return this.lookupPrice(model)?.[0];
+  public matchPricingModelKey(model: string, vendor?: string): string | undefined {
+    return this.resolve(model, vendor)?.key;
+  }
+
+  /**
+   * The shared matcher (pricing-matcher.ts) decides whenever the table has a key with the
+   * model's base name. Only when it has none, and the vendor is not strict, does the
+   * lookup below try explicit aliases and @-dated keys (claude-sonnet-4-0,
+   * claude-3-opus@20240229), which base names do not reach.
+   */
+  private resolve(model: string, vendor?: string): PriceMatch | undefined {
+    return this.lookupOverride(model, vendor) ?? this.resolveBase(model, vendor);
+  }
+
+  private resolveBase(model: string, vendor?: string): PriceMatch | undefined {
+    const match = matchModel(model, this.table, vendor);
+    // For any other vendor the matcher answers whenever the table has the base name.
+    if (match || STRICT_VENDORS.has(String(vendor || '').trim().toLowerCase())) {
+      return match;
+    }
+    const found = this.lookupPrice(model);
+    if (!found) {
+      return undefined;
+    }
+    const [key, entry] = found;
+    const provider = String((entry as { _provider?: unknown })._provider || (key.includes('/') ? key.split('/', 1)[0] : '')).toLowerCase();
+    return { key, kind: key === model ? 'exact' : 'base', provider, ambiguous: false };
+  }
+
+  /**
+   * For a call with a vendor, the user's pricingOverride entry for the model among those that
+   * can be the vendor's price (see overrideFitsVendor): same base name, the key for the exact
+   * name first, then the exact dated name, then the shortest. It wins over the bundled snapshot,
+   * a local cache and the vendor's own keys. Without a vendor there is no pre-pass: the full
+   * table is matched, where an override under the model's own key has replaced that entry.
+   * Same as traccia-py's cost_engine._match.
+   */
+  private lookupOverride(model: string, vendor?: string): PriceMatch | undefined {
+    if (!vendorProviders(vendor).length || !String(model || '').trim()) {
+      return undefined;
+    }
+    if (this.overrideEntries === undefined) {
+      this.overrideEntries = Object.entries(this.table).filter(([, rates]) => rates?._override);
+    }
+    const base = baseName(model);
+    const keys = this.overrideEntries
+      .filter(([key, rates]) => baseName(key) === base && overrideFitsVendor(key, rates, model, vendor!))
+      .map(([key]) => key);
+    if (!keys.length) {
+      return undefined;
+    }
+    const wanted = nameOf(model);
+    const rank = (key: string): Array<number | string> => [
+      key === model ? 0 : 1,
+      nameOf(key) === wanted ? 0 : 1,
+      key.length,
+      key,
+    ];
+    const key = keys.reduce((best, k) => (before(rank(k), rank(best)) ? k : best));
+    return {
+      key,
+      kind: key === model ? 'exact' : 'base',
+      provider: providerOf(key, this.table[key]),
+      ambiguous: false,
+    };
   }
 
   /**
@@ -191,6 +260,47 @@ export function getResolver(): CostResolver {
 export function setResolver(resolver: CostResolver): void {
   const globalAny = globalThis as any;
   globalAny[GLOBAL_RESOLVER_KEY] = resolver;
+}
+
+/**
+ * Whether an override can price a call to `model` made through `vendor`. An override that names a
+ * provider (_provider/provider) must name the vendor's provider family (with the matcher's
+ * aliases, so google_gemini covers gemini). Otherwise its key's path (every segment but the
+ * last) must be empty, the model's path, or a vendor-family provider followed by the model's
+ * path, so "together_ai/llama-3.3-70b-versatile" never prices Groq's "llama-3.3-70b-versatile"
+ * while "openai/gpt-oss-120b", Groq's own model id, does. traccia-py applies the same rule.
+ */
+function overrideFitsVendor(key: string, pricing: PricingRates, model: string, vendor: string): boolean {
+  const families = vendorProviders(vendor);
+  const named = String(pricing?._provider ?? pricing?.provider ?? '').toLowerCase();
+  if (named) {
+    return inFamily(named, families);
+  }
+  const path = (name: string): string[] => name.trim().toLowerCase().split('/').slice(0, -1);
+  let modelPath = path(model);
+  if (modelPath.length && inFamily(modelPath[0], families)) {
+    modelPath = modelPath.slice(1); // "groq/llama-3.3-70b-versatile": the vendor's own prefix
+  }
+  const keyPath = path(key);
+  const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((s, i) => s === b[i]);
+  if (keyPath.length === 0 || same(keyPath, modelPath)) {
+    return true;
+  }
+  const [provider, ...rest] = keyPath;
+  return same(rest, modelPath) && inFamily(provider, families);
+}
+
+/** Whether rank `a` sorts before rank `b`, element by element (a Python tuple comparison). */
+function before(a: Array<number | string>, b: Array<number | string>): boolean {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
+}
+
+/** The table itself when already frozen, else a frozen shallow copy (the caller's object is left alone). */
+function frozen(table: PricingTable): PricingTable {
+  return Object.isFrozen(table) ? table : Object.freeze({ ...table });
 }
 
 function rate(pricing: PricingRates, primary: keyof PricingRates, alias: keyof PricingRates): number {
