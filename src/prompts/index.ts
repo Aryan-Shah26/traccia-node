@@ -17,8 +17,13 @@ export type FetchImpl = (
 ) => Promise<{ payload: Record<string, unknown>; etag?: string }>;
 
 const DEFAULT_TTL_S = 60;
-const cache = new PromptCache(DEFAULT_TTL_S);
-let cacheTtlS = DEFAULT_TTL_S;
+const PROMPT_CACHE_KEY = Symbol.for('traccia.promptCache');
+
+type PromptCacheHost = typeof globalThis & { [PROMPT_CACHE_KEY]?: PromptCache };
+
+/** One process shares the cache and its init() TTL across the separately bundled entry points. */
+const host = globalThis as PromptCacheHost;
+const cache = (host[PROMPT_CACHE_KEY] ??= new PromptCache(DEFAULT_TTL_S));
 let fetchImpl: FetchImpl = (name, opts) => fetchPromptRuntime(name, opts);
 
 export function configurePrompts(opts: {
@@ -26,8 +31,7 @@ export function configurePrompts(opts: {
   promptApiBase?: string | null;
 }): void {
   if (opts.cacheTtlS != null) {
-    cacheTtlS = opts.cacheTtlS;
-    cache.ttlSeconds = cacheTtlS;
+    cache.ttlSeconds = opts.cacheTtlS;
   }
   if (opts.promptApiBase !== undefined) {
     setPromptApiBase(opts.promptApiBase);

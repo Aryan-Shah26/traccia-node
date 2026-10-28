@@ -1,9 +1,12 @@
 
 import { startTracing, stopTracing } from '../auto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
-const TEST_CONFIG_PATH = path.join(process.cwd(), 'traccia.toml');
+// Write traccia.toml into a temp cwd, not the repo root other suites read while running in parallel.
+const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'traccia-config-integration-'));
+const TEST_CONFIG_PATH = path.join(TEST_DIR, 'traccia.toml');
 
 // Mock exporters to prevent network calls
 jest.mock('../exporter/otlp-exporter', () => ({
@@ -21,11 +24,16 @@ jest.mock('../exporter/http-exporter', () => ({
 }));
 
 describe('Configuration Integration', () => {
+    let cwdSpy: jest.SpyInstance;
+
     beforeAll(async () => {
+        cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(TEST_DIR);
         // Clean up
         if (fs.existsSync(TEST_CONFIG_PATH)) fs.unlinkSync(TEST_CONFIG_PATH);
         await stopTracing();
     });
+
+    afterAll(() => cwdSpy.mockRestore());
 
     afterEach(async () => {
         if (fs.existsSync(TEST_CONFIG_PATH)) fs.unlinkSync(TEST_CONFIG_PATH);

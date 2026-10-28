@@ -115,6 +115,59 @@ describe('client config store', () => {
     autoCopy!.setAgentId(undefined);
   });
 
+  it('shares the governance endpoint overrides across bundled copies', () => {
+    let autoCopy: typeof import('../governance/config') | undefined;
+    let sdkCopy: typeof import('../governance/config') | undefined;
+    jest.isolateModules(() => {
+      autoCopy = require('../governance/config');
+    });
+    jest.isolateModules(() => {
+      sdkCopy = require('../governance/config');
+    });
+    expect(autoCopy).not.toBe(sdkCopy);
+
+    autoCopy!.configureGovernance({
+      statusCheckEndpoint: 'http://127.0.0.1:9/status/{agent_id}',
+      postBlockEndpoint: 'http://127.0.0.1:9/block/{agent_id}',
+    });
+    expect(sdkCopy!.govConfig.statusCheckEndpoint).toBe('http://127.0.0.1:9/status/{agent_id}');
+    expect(sdkCopy!.govConfig.postBlockEndpoint).toBe('http://127.0.0.1:9/block/{agent_id}');
+    autoCopy!.govConfig.statusCheckEndpoint = undefined;
+    autoCopy!.govConfig.postBlockEndpoint = undefined;
+  });
+
+  it('shares the prompt API base and prompt cache across bundled copies', async () => {
+    let autoCopy: typeof import('../prompts') | undefined;
+    let sdkCopy: typeof import('../prompts') | undefined;
+    let sdkClient: typeof import('../prompts/client') | undefined;
+    jest.isolateModules(() => {
+      autoCopy = require('../prompts');
+    });
+    jest.isolateModules(() => {
+      sdkCopy = require('../prompts');
+      sdkClient = require('../prompts/client');
+    });
+    expect(autoCopy).not.toBe(sdkCopy);
+
+    autoCopy!.configurePrompts({ cacheTtlS: 0, promptApiBase: 'http://127.0.0.3:9/' });
+    try {
+      expect(sdkCopy!.getPromptApiBase()).toBe('http://127.0.0.3:9');
+      process.env.TRACCIA_API_KEY = 'tr_test_env_key';
+      expect(sdkClient!.resolveCredentials().baseUrl).toBe('http://127.0.0.3:9');
+
+      // TTL 0 from init() makes the second load refetch; the default 60s would not.
+      const fetchImpl = jest.fn().mockResolvedValue({ payload: { name: 'p', template: 'hi' } });
+      sdkCopy!._setFetchImplForTests(fetchImpl);
+      await sdkCopy!.loadPrompt({ name: 'p' });
+      await sdkCopy!.loadPrompt({ name: 'p' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      autoCopy!.configurePrompts({ cacheTtlS: 60, promptApiBase: null });
+      autoCopy!.resetPromptCache();
+      sdkCopy!._resetFetchImplForTests();
+    }
+  });
+
   it('never pairs a key from env with the default endpoint init() stored', async () => {
     await init({ agentId: 'agent-1', loadEnv: false });
     process.env.TRACCIA_API_KEY = 'tr_test_env_key';

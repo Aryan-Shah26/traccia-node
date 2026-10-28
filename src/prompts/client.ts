@@ -18,14 +18,20 @@ export class PromptFetchError extends Error {
 }
 
 let httpClient: AxiosInstance = axios.create({ timeout: 5000 });
-let configuredPromptApiBase: string | undefined;
+
+const PROMPT_API_BASE_KEY = Symbol.for('traccia.promptApiBase');
+
+type PromptApiBaseHost = typeof globalThis & { [PROMPT_API_BASE_KEY]?: string };
+
+/** One process shares the init() prompt API base across the separately bundled entry points. */
+const host = globalThis as PromptApiBaseHost;
 
 export function setPromptApiBase(base?: string | null): void {
-  configuredPromptApiBase = base ? String(base).replace(/\/$/, '') : undefined;
+  host[PROMPT_API_BASE_KEY] = base ? String(base).replace(/\/$/, '') : undefined;
 }
 
 export function getPromptApiBase(): string | undefined {
-  return configuredPromptApiBase;
+  return host[PROMPT_API_BASE_KEY];
 }
 
 export function _setHttpClientForTests(client: AxiosInstance): void {
@@ -34,7 +40,7 @@ export function _setHttpClientForTests(client: AxiosInstance): void {
 
 export function _resetHttpClientForTests(): void {
   httpClient = axios.create({ timeout: 5000 });
-  configuredPromptApiBase = undefined;
+  delete host[PROMPT_API_BASE_KEY];
 }
 
 export function deriveBaseUrl(tracesEndpoint: string): string {
@@ -57,7 +63,7 @@ export function resolveCredentials(opts?: {
   }
   let base =
     opts?.promptApiBase ||
-    configuredPromptApiBase ||
+    getPromptApiBase() ||
     process.env.TRACCIA_PROMPT_API_BASE ||
     undefined;
   if (!base) {

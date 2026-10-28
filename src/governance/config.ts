@@ -22,7 +22,14 @@ class GovernanceConfig {
   statusCacheTtlSeconds = 60;
 }
 
-export const govConfig = new GovernanceConfig();
+const GOVERNANCE_CONFIG_KEY = Symbol.for('traccia.governanceConfig');
+
+type GovernanceConfigHost = typeof globalThis & { [GOVERNANCE_CONFIG_KEY]?: GovernanceConfig };
+
+/** One process shares the overrides across the separately bundled entry points (auto, index, cli). */
+const host = globalThis as GovernanceConfigHost;
+
+export const govConfig = (host[GOVERNANCE_CONFIG_KEY] ??= new GovernanceConfig());
 
 export function configureGovernance(
   options: GovernanceConfigOptions & { configFile?: string } = {},
